@@ -438,8 +438,6 @@ function switchPage(pageId) {
   const navBtn = document.querySelector(`[data-page="${pageId}"]`);
   if (navBtn) navBtn.classList.add('active');
 
-  updateNavIndicator();
-
   // Lazy render
   if (pageId === 'home') renderDashboard();
   if (pageId === 'transactions') renderTransactions();
@@ -449,19 +447,6 @@ function switchPage(pageId) {
 
   // Scroll top
   document.querySelector('.page-container').scrollTop = 0;
-}
-
-function updateNavIndicator() {
-  const navBtns = document.querySelectorAll('.nav-item');
-  const indicator = document.getElementById('navIndicator');
-  navBtns.forEach((btn, i) => {
-    if (btn.classList.contains('active')) {
-      const btnRect = btn.getBoundingClientRect();
-      const navRect = btn.parentElement.getBoundingClientRect();
-      const left = btnRect.left - navRect.left + (btnRect.width / 2) - 20;
-      indicator.style.left = left + 'px';
-    }
-  });
 }
 
 // ── Modal Helpers ─────────────────────────────────────────────────────
@@ -832,9 +817,6 @@ function init() {
 
   // Kick off home
   renderDashboard();
-
-  // Nav indicator init
-  setTimeout(updateNavIndicator, 50);
 
   // Set avatar initials
   if (state.name) {
