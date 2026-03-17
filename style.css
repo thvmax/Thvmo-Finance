@@ -1150,35 +1150,68 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   cursor: pointer;
 }
 
-/* ── Make Modals look good on desktop ── */
-@media (min-width: 768px) {
-  .slide-up-modal {
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%) scale(0.95);
-    bottom: auto;
-    border-radius: 24px;
-    opacity: 0;
-    pointer-events: none;
-  }
-  .slide-up-modal.open {
-    transform: translate(-50%, -50%) scale(1);
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .modal-handle { display: none; }
+/* ════════════════ RESPONSIVE & MOBILE UI ════════════════ */
+
+/* Mobile Bottom Navigation (iOS Style) */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  background: rgba(15, 23, 42, 0.85); /* Dark theme glass */
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-around;
+  /* padding-bottom adds extra space for the iPhone swipe bar! */
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+  z-index: 30;
 }
 
-/* ── Force Nav to a new row on mobile ── */
+[data-theme="light"] .bottom-nav {
+  background: rgba(255, 255, 255, 0.85); /* Light theme glass */
+}
+
+.bottom-nav .nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 6px 12px;
+  border-radius: 12px;
+  color: var(--text3);
+}
+
+.bottom-nav .nav-item svg { transition: transform 0.2s ease; }
+.bottom-nav .nav-item span { font-size: 10px; font-weight: 600; margin-top: 2px;}
+
+.bottom-nav .nav-item.active {
+  color: var(--accent);
+  background: transparent;
+}
+
+.bottom-nav .nav-item.active svg { transform: translateY(-2px); }
+
+/* Device Specific Rules */
 @media (max-width: 768px) {
-  .top-nav { order: 3; width: 100%; justify-content: flex-start; }
+  .top-nav { display: none; } /* Hide text links in top bar on mobile */
+  
+  /* Add padding to bottom of page so content doesn't hide behind nav */
+  .page-container { padding-bottom: calc(110px + env(safe-area-inset-bottom)); }
+  
+  /* Move the + button up so it sits right above the bottom nav */
+  .fab { bottom: calc(85px + env(safe-area-inset-bottom)); }
 }
 
-@media (min-width: 431px) {
+@media (min-width: 769px) {
+  .bottom-nav { display: none; } /* Hide bottom nav on PC/Mac */
   .app-shell {
     border-left: 1px solid var(--border);
     border-right: 1px solid var(--border);
     box-shadow: 0 0 80px rgba(0,0,0,0.3);
   }
-  .slide-up-modal { border-radius: 28px 28px 0 0; }
 }

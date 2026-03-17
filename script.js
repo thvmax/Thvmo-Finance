@@ -435,8 +435,10 @@ function switchPage(pageId) {
   const page = document.getElementById('page-' + pageId);
   page.classList.add('active');
 
-  const navBtn = document.querySelector(`[data-page="${pageId}"]`);
-  if (navBtn) navBtn.classList.add('active');
+  // UPDATE THIS PART: Make sure BOTH mobile and desktop nav icons light up
+  document.querySelectorAll(`[data-page="${pageId}"]`).forEach(btn => {
+      btn.classList.add('active');
+  });
 
   // Lazy render
   if (pageId === 'home') renderDashboard();
