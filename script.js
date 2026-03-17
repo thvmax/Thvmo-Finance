@@ -4,6 +4,13 @@
 
 'use strict';
 
+// ── Supabase Configuration ─────────────────────────────────────────────
+const SUPABASE_URL = 'https://yxghvfxxwtuutlpbnbaq.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4Z2h2Znh4d3R1dXRscGJuYmFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM3NDM0NDQsImV4cCI6MjA4OTMxOTQ0NH0.uDU2rymXDZu_NHWvIZ_MoWv-bOgdRzY0M6Crx0V_IPA';
+
+const { createClient } = supabase;
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 // ── State ──────────────────────────────────────────────────────────────
 let state = {
   currentSavings: 0,
@@ -25,24 +32,45 @@ let donutChart = null;
 let barChart = null;
 let lineChart = null;
 
-// ── Load / Save ────────────────────────────────────────────────────────
-function loadState() {
+// ── Cloud Data Loading ─────────────────────────────────────────────────
+async function loadAllData() {
   try {
-    const saved = localStorage.getItem('floFinanceData');
-    if (saved) state = { ...state, ...JSON.parse(saved) };
-  } catch (e) { console.warn('Could not load state', e); }
-}
+    // Load local preferences (currency, name, savings)
+    const savedSettings = localStorage.getItem('floFinanceSettings');
+    if (savedSettings) {
+      const parsed = JSON.parse(savedSettings);
+      state.name = parsed.name || 'User';
+      state.currentSavings = parsed.currentSavings || 0;
+      state.currency = parsed.currency || 'USD';
+    }
 
-function saveState() {
-  try {
-    localStorage.setItem('floFinanceData', JSON.stringify(state));
-  } catch (e) { console.warn('Could not save state', e); }
+    // Fetch from Cloud Database
+    const [txnsRes, goalsRes] = await Promise.all([
+      sb.from('transactions').select('*').order('date', { ascending: false }),
+      sb.from('goals').select('*').order('created_at', { ascending: true })
+    ]);
+
+    if (txnsRes.error) throw txnsRes.error;
+    if (goalsRes.error) throw goalsRes.error;
+
+    state.transactions = txnsRes.data;
+    state.goals = goalsRes.data;
+
+    // Update avatar initials
+    if (state.name) {
+      const initials = state.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+      document.querySelector('.avatar-btn span').textContent = initials;
+    }
+
+    renderCurrentPage();
+  } catch (error) {
+    console.error('Error loading data:', error);
+    showToast('Failed to sync with cloud', 'error');
+  }
 }
 
 // ── Date Helpers ───────────────────────────────────────────────────────
-function todayStr() {
-  return new Date().toISOString().split('T')[0];
-}
+function todayStr() { return new Date().toISOString().split('T')[0]; }
 
 function isThisMonth(dateStr) {
   if (!dateStr) return false;
@@ -123,7 +151,6 @@ function renderDashboard() {
   animateCounter(document.getElementById('statExpenses'), expenses);
   document.getElementById('statRate').textContent = rate + '%';
 
-  // Recent 5 transactions
   const recent = [...state.transactions].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 5);
   const list = document.getElementById('recentList');
   const empty = document.getElementById('emptyHome');
@@ -203,37 +230,28 @@ function renderAnalytics() {
   const total = expenses.reduce((s, t) => s + t.amount, 0);
   document.getElementById('donutTotal').textContent = fmtShort(total);
 
-  // Group by category
   const catMap = {};
-  expenses.forEach(t => {
-    catMap[t.category] = (catMap[t.category] || 0) + t.amount;
-  });
+  expenses.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + t.amount; });
 
   const categories = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
-  const palette = ['#7C3AED','#A3E635','#38BDF8','#F97316','#EC4899','#FBBF24','#6366F1','#10B981'];
+  const palette = ['#7C3AED', '#A3E635', '#38BDF8', '#F97316', '#EC4899', '#FBBF24', '#6366F1', '#10B981'];
 
   const labels = categories.map(c => c[0]);
   const data = categories.map(c => c[1]);
   const colors = categories.map((_, i) => palette[i % palette.length]);
 
-  // Donut
   if (donutChart) donutChart.destroy();
   const dCtx = document.getElementById('donutChart').getContext('2d');
   donutChart = new Chart(dCtx, {
     type: 'doughnut',
     data: { labels, datasets: [{ data: data.length ? data : [1], backgroundColor: data.length ? colors : ['#1E293B'], borderWidth: 0, hoverOffset: 6 }] },
     options: {
-      cutout: '72%',
-      animation: { duration: 800, easing: 'easeInOutQuart' },
-      plugins: { legend: { display: false }, tooltip: {
-        callbacks: { label: (ctx) => ` ${ctx.label}: ${fmt(ctx.parsed)}` }
-      }},
-      responsive: true,
-      maintainAspectRatio: true
+      cutout: '72%', animation: { duration: 800, easing: 'easeInOutQuart' },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ` ${ctx.label}: ${fmt(ctx.parsed)}` } } },
+      responsive: true, maintainAspectRatio: true
     }
   });
 
-  // Legend
   const legendEl = document.getElementById('legendList');
   legendEl.innerHTML = '';
   if (categories.length === 0) {
@@ -255,18 +273,13 @@ function renderAnalytics() {
     });
   }
 
-  // Bar chart — last 4 months
-  const months = [];
-  const incData = [];
-  const expData = [];
+  const months = []; const incData = []; const expData = [];
   for (let i = 3; i >= 0; i--) {
-    const d = new Date();
-    d.setMonth(d.getMonth() - i);
+    const d = new Date(); d.setMonth(d.getMonth() - i);
     const m = d.getMonth(); const y = d.getFullYear();
     months.push(d.toLocaleDateString('en-US', { month: 'short' }));
     const txns = state.transactions.filter(t => {
-      const td = new Date(t.date);
-      return td.getMonth() === m && td.getFullYear() === y;
+      const td = new Date(t.date); return td.getMonth() === m && td.getFullYear() === y;
     });
     incData.push(txns.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0));
     expData.push(txns.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0));
@@ -277,16 +290,13 @@ function renderAnalytics() {
   barChart = new Chart(bCtx, {
     type: 'bar',
     data: {
-      labels: months,
-      datasets: [
+      labels: months, datasets: [
         { label: 'Income', data: incData, backgroundColor: 'rgba(163,230,53,0.7)', borderRadius: 8, borderSkipped: false },
         { label: 'Expenses', data: expData, backgroundColor: 'rgba(248,113,113,0.7)', borderRadius: 8, borderSkipped: false }
       ]
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      animation: { duration: 700, easing: 'easeInOutQuart' },
+      responsive: true, maintainAspectRatio: true, animation: { duration: 700, easing: 'easeInOutQuart' },
       plugins: { legend: { labels: { color: 'var(--text2)', font: { family: 'DM Sans', size: 12 }, boxWidth: 10, boxHeight: 10 } }, tooltip: { callbacks: { label: (ctx) => ` ${ctx.dataset.label}: ${fmt(ctx.parsed.y)}` } } },
       scales: {
         x: { grid: { display: false }, ticks: { color: 'var(--text3)', font: { family: 'DM Sans', size: 11 } }, border: { display: false } },
@@ -302,10 +312,7 @@ function renderGoals() {
   const empty = document.getElementById('emptyGoals');
   list.innerHTML = '';
 
-  if (state.goals.length === 0) {
-    empty.classList.add('visible');
-    return;
-  }
+  if (state.goals.length === 0) { empty.classList.add('visible'); return; }
   empty.classList.remove('visible');
 
   state.goals.forEach((g, i) => {
@@ -316,39 +323,21 @@ function renderGoals() {
     el.style.animationDelay = `${i * 60}ms`;
     el.innerHTML = `
       <div class="goal-header">
-        <div class="goal-info">
-          <div class="goal-emoji">${g.emoji || '🎯'}</div>
-          <div>
-            <div class="goal-name">${escHtml(g.name)}</div>
-            <div class="goal-target">Target: ${fmt(g.target)}</div>
-          </div>
+        <div class="goal-info"><div class="goal-emoji">${g.emoji || '🎯'}</div>
+          <div><div class="goal-name">${escHtml(g.name)}</div><div class="goal-target">Target: ${fmt(g.target)}</div></div>
         </div>
         <div class="goal-actions">
-          <button class="goal-action-btn edit" data-id="${g.id}" title="Edit">
-            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <button class="goal-action-btn delete" data-id="${g.id}" title="Delete">
-            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-          </button>
+          <button class="goal-action-btn edit" data-id="${g.id}" title="Edit"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+          <button class="goal-action-btn delete" data-id="${g.id}" title="Delete"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
         </div>
       </div>
-      <div class="goal-amounts">
-        <span class="goal-saved">${fmt(g.saved)}</span>
-        <span class="goal-pct">${pct}%${complete ? ' ✓' : ''}</span>
-      </div>
-      <div class="progress-track">
-        <div class="progress-fill" data-pct="${pct}" style="width:0%"></div>
-      </div>`;
+      <div class="goal-amounts"><span class="goal-saved">${fmt(g.saved)}</span><span class="goal-pct">${pct}%${complete ? ' ✓' : ''}</span></div>
+      <div class="progress-track"><div class="progress-fill" data-pct="${pct}" style="width:0%"></div></div>`;
 
     el.querySelector('.edit').addEventListener('click', () => openEditGoal(g.id));
     el.querySelector('.delete').addEventListener('click', () => deleteGoal(g.id));
     list.appendChild(el);
-
-    // Animate bar
-    setTimeout(() => {
-      const fill = el.querySelector('.progress-fill');
-      if (fill) fill.style.width = pct + '%';
-    }, 100 + i * 80);
+    setTimeout(() => { const fill = el.querySelector('.progress-fill'); if (fill) fill.style.width = pct + '%'; }, 100 + i * 80);
   });
 }
 
@@ -357,64 +346,28 @@ function renderProjection() {
   const { income, expenses } = getMonthStats();
   const net = income - expenses;
   const balance = getTotalBalance();
-
   document.getElementById('projNet').textContent = fmt(net);
   document.getElementById('proj6m').textContent = fmt(balance + net * 6);
 
-  const months = [];
-  const savingsData = [];
-  const tbody = document.getElementById('projTableBody');
-  tbody.innerHTML = '';
-
+  const months = []; const savingsData = [];
+  const tbody = document.getElementById('projTableBody'); tbody.innerHTML = '';
   for (let i = 1; i <= 6; i++) {
-    const label = monthLabel(i);
-    months.push(label.split(' ')[0]);
-    const projected = balance + net * i;
-    savingsData.push(projected);
-
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${label}</td>
-      <td style="color:var(--green2)">${fmt(income)}</td>
-      <td style="color:var(--red)">${fmt(expenses)}</td>
-      <td>${fmt(projected)}</td>`;
-    tbody.appendChild(tr);
+    const label = monthLabel(i); months.push(label.split(' ')[0]);
+    const projected = balance + net * i; savingsData.push(projected);
+    tbody.innerHTML += `<tr><td>${label}</td><td style="color:var(--green2)">${fmt(income)}</td><td style="color:var(--red)">${fmt(expenses)}</td><td>${fmt(projected)}</td></tr>`;
   }
 
-  // Line chart
   if (lineChart) lineChart.destroy();
   const lCtx = document.getElementById('lineChart').getContext('2d');
-
   const gradient = lCtx.createLinearGradient(0, 0, 0, 180);
-  gradient.addColorStop(0, 'rgba(124,58,237,0.3)');
-  gradient.addColorStop(1, 'rgba(124,58,237,0)');
+  gradient.addColorStop(0, 'rgba(124,58,237,0.3)'); gradient.addColorStop(1, 'rgba(124,58,237,0)');
 
   lineChart = new Chart(lCtx, {
     type: 'line',
-    data: {
-      labels: months,
-      datasets: [{
-        label: 'Projected Savings',
-        data: savingsData,
-        borderColor: '#7C3AED',
-        backgroundColor: gradient,
-        borderWidth: 2.5,
-        pointBackgroundColor: '#7C3AED',
-        pointBorderColor: '#fff',
-        pointBorderWidth: 2,
-        pointRadius: 5,
-        tension: 0.4,
-        fill: true
-      }]
-    },
+    data: { labels: months, datasets: [{ label: 'Projected Savings', data: savingsData, borderColor: '#7C3AED', backgroundColor: gradient, borderWidth: 2.5, pointBackgroundColor: '#7C3AED', pointBorderColor: '#fff', pointBorderWidth: 2, pointRadius: 5, tension: 0.4, fill: true }] },
     options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      animation: { duration: 900, easing: 'easeInOutQuart' },
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { label: ctx => ` ${fmt(ctx.parsed.y)}` } }
-      },
+      responsive: true, maintainAspectRatio: true, animation: { duration: 900, easing: 'easeInOutQuart' },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ` ${fmt(ctx.parsed.y)}` } } },
       scales: {
         x: { grid: { display: false }, ticks: { color: 'var(--text3)', font: { family: 'DM Sans', size: 11 } }, border: { display: false } },
         y: { grid: { color: 'rgba(148,163,184,0.08)' }, ticks: { color: 'var(--text3)', font: { family: 'DM Sans', size: 11 }, callback: v => fmtShort(v) }, border: { display: false } }
@@ -427,27 +380,18 @@ function renderProjection() {
 let currentPage = 'home';
 
 function switchPage(pageId) {
-  // Hide old
   document.getElementById('page-' + currentPage).classList.remove('active');
   document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
 
   currentPage = pageId;
-  const page = document.getElementById('page-' + pageId);
-  page.classList.add('active');
+  document.getElementById('page-' + pageId).classList.add('active');
+  document.querySelectorAll(`[data-page="${pageId}"]`).forEach(btn => btn.classList.add('active'));
 
-  // UPDATE THIS PART: Make sure BOTH mobile and desktop nav icons light up
-  document.querySelectorAll(`[data-page="${pageId}"]`).forEach(btn => {
-      btn.classList.add('active');
-  });
-
-  // Lazy render
   if (pageId === 'home') renderDashboard();
   if (pageId === 'transactions') renderTransactions();
   if (pageId === 'analytics') renderAnalytics();
   if (pageId === 'goals') renderGoals();
   if (pageId === 'projection') renderProjection();
-
-  // Scroll top
   document.querySelector('.page-container').scrollTop = 0;
 }
 
@@ -455,14 +399,9 @@ function switchPage(pageId) {
 function openModal(type = 'income', txnId = null) {
   const modal = document.getElementById('txnModal');
   const backdrop = document.getElementById('modalBackdrop');
-
-  // Set type
   currentTxnType = type;
-  document.querySelectorAll('.type-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.type === type);
-  });
+  document.querySelectorAll('.type-btn').forEach(b => b.classList.toggle('active', b.dataset.type === type));
 
-  // Reset form
   document.getElementById('txnId').value = txnId || '';
   document.getElementById('txnDesc').value = '';
   document.getElementById('txnAmount').value = '';
@@ -471,24 +410,18 @@ function openModal(type = 'income', txnId = null) {
   document.getElementById('modalTitle').textContent = txnId ? 'Edit Transaction' : 'Add Transaction';
 
   if (txnId) {
-    const t = state.transactions.find(t => t.id === txnId);
+    const t = state.transactions.find(x => x.id === txnId);
     if (t) {
       currentTxnType = t.type;
-      document.querySelectorAll('.type-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.type === t.type);
-      });
+      document.querySelectorAll('.type-btn').forEach(b => b.classList.toggle('active', b.dataset.type === t.type));
       document.getElementById('txnDesc').value = t.description;
       document.getElementById('txnAmount').value = t.amount;
       document.getElementById('txnDate').value = t.date;
       document.getElementById('txnCategory').value = t.category;
     }
   }
-
   backdrop.classList.add('visible');
-  requestAnimationFrame(() => {
-    modal.classList.add('open');
-    document.getElementById('fabBtn').classList.add('open');
-  });
+  requestAnimationFrame(() => { modal.classList.add('open'); document.getElementById('fabBtn').classList.add('open'); });
 }
 
 function closeModal(id) {
@@ -500,7 +433,6 @@ function closeModal(id) {
 function openGoalModal(goalId = null) {
   const modal = document.getElementById('goalModal');
   const backdrop = document.getElementById('modalBackdrop');
-
   document.getElementById('goalId').value = goalId || '';
   document.getElementById('goalName').value = '';
   document.getElementById('goalTarget').value = '';
@@ -510,18 +442,14 @@ function openGoalModal(goalId = null) {
   document.querySelectorAll('.emoji-btn').forEach(b => b.classList.toggle('active', b.dataset.emoji === '🎯'));
 
   if (goalId) {
-    const g = state.goals.find(g => g.id === goalId);
+    const g = state.goals.find(x => x.id === goalId);
     if (g) {
-      document.getElementById('goalName').value = g.name;
-      document.getElementById('goalTarget').value = g.target;
-      document.getElementById('goalSaved').value = g.saved;
-      selectedEmoji = g.emoji || '🎯';
+      document.getElementById('goalName').value = g.name; document.getElementById('goalTarget').value = g.target;
+      document.getElementById('goalSaved').value = g.saved; selectedEmoji = g.emoji || '🎯';
       document.querySelectorAll('.emoji-btn').forEach(b => b.classList.toggle('active', b.dataset.emoji === g.emoji));
     }
   }
-
-  backdrop.classList.add('visible');
-  requestAnimationFrame(() => modal.classList.add('open'));
+  backdrop.classList.add('visible'); requestAnimationFrame(() => modal.classList.add('open'));
 }
 
 function openSettingsModal() {
@@ -529,86 +457,88 @@ function openSettingsModal() {
   const backdrop = document.getElementById('modalBackdrop');
   document.getElementById('settingsName').value = state.name || '';
   document.getElementById('settingsSavings').value = state.currentSavings || '';
-  backdrop.classList.add('visible');
-  requestAnimationFrame(() => modal.classList.add('open'));
+  document.getElementById('settingsCurrency').value = state.currency || 'USD';
+  backdrop.classList.add('visible'); requestAnimationFrame(() => modal.classList.add('open'));
 }
 
-// ── Transaction CRUD ───────────────────────────────────────────────────
+// ── Transaction Cloud CRUD ─────────────────────────────────────────────
 let currentTxnType = 'income';
 
-function saveTxn() {
+async function saveTxn() {
   const id = document.getElementById('txnId').value;
-  const desc = document.getElementById('txnDesc').value.trim();
-  const amount = parseFloat(document.getElementById('txnAmount').value);
-  const date = document.getElementById('txnDate').value;
-  const category = document.getElementById('txnCategory').value;
+  const payload = {
+    description: document.getElementById('txnDesc').value.trim(),
+    amount: parseFloat(document.getElementById('txnAmount').value),
+    date: document.getElementById('txnDate').value,
+    category: document.getElementById('txnCategory').value,
+    type: currentTxnType
+  };
 
-  if (!desc) { showToast('Please add a description', 'error'); return; }
-  if (!amount || amount <= 0) { showToast('Please enter a valid amount', 'error'); return; }
-  if (!date) { showToast('Please select a date', 'error'); return; }
+  if (!payload.description) { showToast('Please add a description', 'error'); return; }
+  if (!payload.amount || payload.amount <= 0) { showToast('Please enter a valid amount', 'error'); return; }
+  if (!payload.date) { showToast('Please select a date', 'error'); return; }
 
-  if (id) {
-    const idx = state.transactions.findIndex(t => t.id === id);
-    if (idx > -1) {
-      state.transactions[idx] = { ...state.transactions[idx], description: desc, amount, date, category, type: currentTxnType };
-      showToast('Transaction updated', 'success');
-    }
-  } else {
-    state.transactions.push({ id: genId(), type: currentTxnType, description: desc, amount, date, category });
-    showToast('Transaction added', 'success');
-  }
+  try {
+    let res;
+    if (id) res = await sb.from('transactions').update(payload).eq('id', id);
+    else res = await sb.from('transactions').insert([payload]);
 
-  saveState();
-  closeModal('txnModal');
-  renderCurrentPage();
+    if (res.error) throw res.error;
+    showToast(id ? 'Transaction updated' : 'Transaction added', 'success');
+    closeModal('txnModal');
+    loadAllData();
+  } catch (e) { showToast('Cloud sync error', 'error'); }
 }
 
 function openEditTxn(id) { openModal(null, id); }
 
-function deleteTxn(id) {
+async function deleteTxn(id) {
   if (!confirm('Delete this transaction?')) return;
-  state.transactions = state.transactions.filter(t => t.id !== id);
-  saveState();
-  showToast('Transaction deleted', 'info');
-  renderCurrentPage();
+  try {
+    const { error } = await sb.from('transactions').delete().eq('id', id);
+    if (error) throw error;
+    showToast('Transaction deleted', 'info');
+    loadAllData();
+  } catch (e) { showToast('Cloud delete error', 'error'); }
 }
 
-// ── Goal CRUD ──────────────────────────────────────────────────────────
+// ── Goal Cloud CRUD ────────────────────────────────────────────────────
 let selectedEmoji = '🎯';
 
-function saveGoal() {
+async function saveGoal() {
   const id = document.getElementById('goalId').value;
-  const name = document.getElementById('goalName').value.trim();
-  const target = parseFloat(document.getElementById('goalTarget').value);
-  const saved = parseFloat(document.getElementById('goalSaved').value) || 0;
+  const payload = {
+    name: document.getElementById('goalName').value.trim(),
+    target: parseFloat(document.getElementById('goalTarget').value),
+    saved: parseFloat(document.getElementById('goalSaved').value) || 0,
+    emoji: selectedEmoji
+  };
 
-  if (!name) { showToast('Please enter a goal name', 'error'); return; }
-  if (!target || target <= 0) { showToast('Please enter a valid target amount', 'error'); return; }
+  if (!payload.name) { showToast('Please enter a goal name', 'error'); return; }
+  if (!payload.target || payload.target <= 0) { showToast('Please enter a valid target amount', 'error'); return; }
 
-  if (id) {
-    const idx = state.goals.findIndex(g => g.id === id);
-    if (idx > -1) {
-      state.goals[idx] = { ...state.goals[idx], name, target, saved, emoji: selectedEmoji };
-      showToast('Goal updated', 'success');
-    }
-  } else {
-    state.goals.push({ id: genId(), name, target, saved, emoji: selectedEmoji });
-    showToast('Goal created! 🎯', 'success');
-  }
+  try {
+    let res;
+    if (id) res = await sb.from('goals').update(payload).eq('id', id);
+    else res = await sb.from('goals').insert([payload]);
 
-  saveState();
-  closeModal('goalModal');
-  renderGoals();
+    if (res.error) throw res.error;
+    showToast(id ? 'Goal updated' : 'Goal created! 🎯', 'success');
+    closeModal('goalModal');
+    loadAllData();
+  } catch (e) { showToast('Cloud sync error', 'error'); }
 }
 
 function openEditGoal(id) { openGoalModal(id); }
 
-function deleteGoal(id) {
+async function deleteGoal(id) {
   if (!confirm('Delete this goal?')) return;
-  state.goals = state.goals.filter(g => g.id !== id);
-  saveState();
-  showToast('Goal deleted', 'info');
-  renderGoals();
+  try {
+    const { error } = await sb.from('goals').delete().eq('id', id);
+    if (error) throw error;
+    showToast('Goal deleted', 'info');
+    loadAllData();
+  } catch (e) { showToast('Cloud delete error', 'error'); }
 }
 
 // ── Settings ───────────────────────────────────────────────────────────
@@ -616,31 +546,37 @@ function saveSettings() {
   state.name = document.getElementById('settingsName').value.trim() || 'User';
   state.currentSavings = parseFloat(document.getElementById('settingsSavings').value) || 0;
   state.currency = document.getElementById('settingsCurrency').value;
-  
-  // Save local preferences
+
   localStorage.setItem('floFinanceSettings', JSON.stringify({
-    name: state.name,
-    currentSavings: state.currentSavings,
-    currency: state.currency
+    name: state.name, currentSavings: state.currentSavings, currency: state.currency
   }));
 
-  // Update avatar initials
   const initials = state.name ? state.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'JS';
   document.querySelector('.avatar-btn span').textContent = initials;
 
-  saveState();
   closeModal('settingsModal');
   showToast('Settings saved', 'success');
-  renderCurrentPage(); // Re-render to update all symbols instantly!
+  renderCurrentPage();
+}
+
+// ── Clear Cloud Data ───────────────────────────────────────────────────
+async function clearAllCloudData() {
+  if (!confirm('Are you sure you want to PERMANENTLY delete all cloud data? This cannot be undone.')) return;
+  try {
+    // Supabase trick to clear table: delete where id is not null
+    await sb.from('transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    await sb.from('goals').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+
+    closeModal('settingsModal');
+    showToast('All cloud data cleared', 'info');
+    loadAllData(); // Will fetch empty arrays and re-render the empty states!
+  } catch (e) {
+    showToast('Failed to clear cloud data', 'error');
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
-function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
-
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
+function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 function renderCurrentPage() {
   if (currentPage === 'home') renderDashboard();
   else if (currentPage === 'transactions') renderTransactions();
@@ -651,18 +587,13 @@ function renderCurrentPage() {
 
 // ── Toast ─────────────────────────────────────────────────────────────
 const toastIcons = { success: '✅', error: '❌', info: 'ℹ️' };
-
 function showToast(msg, type = 'info', duration = 3000) {
   const container = document.getElementById('toastContainer');
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
   toast.innerHTML = `<span class="toast-icon">${toastIcons[type]}</span><span>${msg}</span>`;
   container.appendChild(toast);
-
-  setTimeout(() => {
-    toast.style.animation = 'toastSlideOut 0.3s ease forwards';
-    setTimeout(() => toast.remove(), 300);
-  }, duration);
+  setTimeout(() => { toast.style.animation = 'toastSlideOut 0.3s ease forwards'; setTimeout(() => toast.remove(), 300); }, duration);
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────
@@ -689,18 +620,9 @@ function toggleTheme() {
 
 // ── Event Listeners ────────────────────────────────────────────────────
 function initEvents() {
-  // Theme
   document.getElementById('themeToggle').addEventListener('click', toggleTheme);
-
-  // Nav
-  document.querySelectorAll('.nav-item').forEach(btn => {
-    btn.addEventListener('click', () => switchPage(btn.dataset.page));
-  });
-
-  // FAB
+  document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => switchPage(btn.dataset.page)));
   document.getElementById('fabBtn').addEventListener('click', () => openModal('expense'));
-
-  // Transaction modal
   document.getElementById('closeTxnModal').addEventListener('click', () => closeModal('txnModal'));
   document.getElementById('saveTxnBtn').addEventListener('click', saveTxn);
 
@@ -708,17 +630,14 @@ function initEvents() {
     btn.addEventListener('click', () => {
       currentTxnType = btn.dataset.type;
       document.querySelectorAll('.type-btn').forEach(b => b.classList.toggle('active', b === btn));
-      // Update default category
       document.getElementById('txnCategory').value = currentTxnType === 'income' ? 'Salary' : 'Food';
     });
   });
 
-  // Goal modal
   document.getElementById('openGoalModal').addEventListener('click', () => openGoalModal());
   document.getElementById('closeGoalModal').addEventListener('click', () => closeModal('goalModal'));
   document.getElementById('saveGoalBtn').addEventListener('click', saveGoal);
 
-  // Emoji picker
   document.querySelectorAll('.emoji-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       selectedEmoji = btn.dataset.emoji;
@@ -726,20 +645,11 @@ function initEvents() {
     });
   });
 
-  // Settings
   document.getElementById('openSettings').addEventListener('click', openSettingsModal);
   document.getElementById('closeSettingsModal').addEventListener('click', () => closeModal('settingsModal'));
   document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
-  document.getElementById('clearDataBtn').addEventListener('click', () => {
-    if (!confirm('Clear all data? This cannot be undone.')) return;
-    state = { currentSavings: 0, name: 'User', transactions: [], goals: [] };
-    saveState();
-    closeModal('settingsModal');
-    renderCurrentPage();
-    showToast('All data cleared', 'info');
-  });
+  document.getElementById('clearDataBtn').addEventListener('click', clearAllCloudData); // Now triggers Supabase deletion
 
-  // Filter pills
   document.querySelectorAll('.pill').forEach(pill => {
     pill.addEventListener('click', () => {
       currentFilter = pill.dataset.filter;
@@ -748,87 +658,25 @@ function initEvents() {
     });
   });
 
-  // Backdrop
   document.getElementById('modalBackdrop').addEventListener('click', () => {
-    closeModal('txnModal');
-    closeModal('goalModal');
-    closeModal('settingsModal');
+    closeModal('txnModal'); closeModal('goalModal'); closeModal('settingsModal');
   });
 
-  // Keyboard
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      closeModal('txnModal');
-      closeModal('goalModal');
-      closeModal('settingsModal');
-    }
+    if (e.key === 'Escape') { closeModal('txnModal'); closeModal('goalModal'); closeModal('settingsModal'); }
   });
 
-  // Auto-fetch from Supabase when the device regains internet connection
-  window.addEventListener('online', () => {
-    showToast('Back online! Syncing...', 'info');
-    loadAllData();
-  });
-}
-
-// ── Sample Data ───────────────────────────────────────────────────────
-function seedSampleData() {
-  if (state.transactions.length > 0 || state.goals.length > 0) return;
-
-  const now = new Date();
-  const m = now.getMonth();
-  const y = now.getFullYear();
-  const d = (offset = 0) => {
-    const dt = new Date(y, m, now.getDate() - offset);
-    return dt.toISOString().split('T')[0];
-  };
-
-  state.currentSavings = 3200;
-
-  state.transactions = [
-    { id: genId(), type: 'income',  description: 'Monthly Salary',    amount: 5500,  date: d(0),  category: 'Salary' },
-    { id: genId(), type: 'income',  description: 'Freelance Project',  amount: 850,   date: d(3),  category: 'Freelance' },
-    { id: genId(), type: 'expense', description: 'Apartment Rent',     amount: 1400,  date: d(1),  category: 'Rent' },
-    { id: genId(), type: 'expense', description: 'Grocery Shopping',   amount: 124,   date: d(2),  category: 'Food' },
-    { id: genId(), type: 'expense', description: 'Netflix & Spotify',  amount: 28,    date: d(4),  category: 'Entertainment' },
-    { id: genId(), type: 'expense', description: 'Uber Rides',         amount: 67,    date: d(5),  category: 'Transport' },
-    { id: genId(), type: 'expense', description: 'Electric Bill',      amount: 95,    date: d(6),  category: 'Utilities' },
-    { id: genId(), type: 'expense', description: 'New Sneakers',       amount: 149,   date: d(7),  category: 'Shopping' },
-    { id: genId(), type: 'income',  description: 'Dividend Payout',    amount: 210,   date: d(8),  category: 'Investment' },
-    { id: genId(), type: 'expense', description: 'Dinner out',         amount: 78,    date: d(9),  category: 'Food' },
-  ];
-
-  state.goals = [
-    { id: genId(), name: 'Emergency Fund',  emoji: '🛡️', target: 10000, saved: 4200 },
-    { id: genId(), name: 'Japan Trip ✈️',   emoji: '✈️', target: 3500,  saved: 1800 },
-    { id: genId(), name: 'New MacBook',     emoji: '💻', target: 2500,  saved: 2500 },
-  ];
-
-  saveState();
+  window.addEventListener('online', () => { showToast('Back online! Syncing...', 'info'); loadAllData(); });
 }
 
 // ── Init ───────────────────────────────────────────────────────────────
 function init() {
-  loadState();
-  seedSampleData();
   initTheme();
   initEvents();
-
-  // Set today's date default
   document.getElementById('txnDate').value = todayStr();
-
-  // Kick off home
-  renderDashboard();
-
-  // Set avatar initials
-  if (state.name) {
-    const initials = state.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-    document.querySelector('.avatar-btn span').textContent = initials;
-  }
+  loadAllData(); // Now completely powered by Supabase!
 }
 
 window.addEventListener('DOMContentLoaded', init);
-
-// expose for inline onclick
 window.openModal = openModal;
 window.switchPage = switchPage;
