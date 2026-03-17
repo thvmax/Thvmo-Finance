@@ -8,6 +8,7 @@
 let state = {
   currentSavings: 0,
   name: 'User',
+  currency: 'USD',
   transactions: [],
   goals: []
 };
@@ -64,7 +65,7 @@ function monthLabel(offset = 0) {
 
 // ── Format Currency ────────────────────────────────────────────────────
 function fmt(n) {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(n || 0);
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: state.currency, minimumFractionDigits: 2 }).format(n || 0);
 }
 
 function fmtShort(n) {
@@ -625,19 +626,25 @@ function deleteGoal(id) {
 
 // ── Settings ───────────────────────────────────────────────────────────
 function saveSettings() {
-  const name = document.getElementById('settingsName').value.trim();
-  const savings = parseFloat(document.getElementById('settingsSavings').value) || 0;
-  state.name = name || 'User';
-  state.currentSavings = savings;
+  state.name = document.getElementById('settingsName').value.trim() || 'User';
+  state.currentSavings = parseFloat(document.getElementById('settingsSavings').value) || 0;
+  state.currency = document.getElementById('settingsCurrency').value;
+  
+  // Save local preferences
+  localStorage.setItem('floFinanceSettings', JSON.stringify({
+    name: state.name,
+    currentSavings: state.currentSavings,
+    currency: state.currency
+  }));
 
   // Update avatar initials
-  const initials = name ? name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'JS';
+  const initials = state.name ? state.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'JS';
   document.querySelector('.avatar-btn span').textContent = initials;
 
   saveState();
   closeModal('settingsModal');
   showToast('Settings saved', 'success');
-  if (currentPage === 'home') renderDashboard();
+  renderCurrentPage(); // Re-render to update all symbols instantly!
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -768,6 +775,12 @@ function initEvents() {
       closeModal('goalModal');
       closeModal('settingsModal');
     }
+  });
+
+  // Auto-fetch from Supabase when the device regains internet connection
+  window.addEventListener('online', () => {
+    showToast('Back online! Syncing...', 'info');
+    loadAllData();
   });
 }
 
